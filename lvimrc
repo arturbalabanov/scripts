@@ -1,0 +1,235 @@
+" Ignore these files in autocomplition, NERDTree and Denite
+set wildignore+=venv,*/generated,*.log,regression_test_data,.idea
+
+augroup ft_python " {{{
+	au!
+	au FileType python setlocal nosmartindent
+	au FileType python setlocal shiftwidth=0  " Insert real tabs when using << and >>
+	au FileType python setlocal tabstop=4  " an hard TAB displays as 4 columns
+	au FileType python setlocal noexpandtab  " don't insert spaces when hitting TABs
+	au FileType python setlocal softtabstop=0  " insert/delete 4 spaces when hitting a TAB/BACKSPACE
+	au FileType python setlocal noautoindent  " don'talign the new line indent with the previous line
+	au FileType python setlocal colorcolumn=121
+	au FileType python setlocal foldnestmax=2
+augroup END " }}}
+
+augroup ft_mako " {{{
+	au!
+	au FileType mako setlocal smartindent
+	au FileType mako setlocal shiftwidth=0  " Insert real tabs when using << and >>
+	au FileType mako setlocal tabstop=4  " an hard TAB displays as 4 columns
+	au FileType mako setlocal noexpandtab  " don't insert spaces when hitting TABs
+	au FileType mako setlocal softtabstop=0  " insert/delete 4 spaces when hitting a TAB/BACKSPACE
+	au FileType mako setlocal noautoindent  " don'talign the new line indent with the previous line
+	au FileType mako setlocal colorcolumn=121
+	au FileType mako setlocal foldnestmax=2
+augroup END " }}}
+
+let g:ale_python_flake8_options = '--max-line-length=120 --ignore=F403,F405,W191,E128,E126,E731,E402,E117,C812,C816'
+let g:ale_linters = {
+  \ 'python': ['flake8'],
+  \ }
+
+if !exists('g:context_filetype#filetypes')
+	let g:context_filetype#filetypes = {}
+endif
+
+let g:context_filetype#filetypes.python = [
+  \ {
+  \    'filetype': 'sql',
+  \    'start': '^\s*\%(\w\+.execute(\|\w*\%(sql\|query\)\s*=\s*\%(sql\.SQL(\)\?\)\(' . "'''" . '\|"""\)',
+  \    'end': '^\s*\1',
+  \ },
+\]
+
+function! RefreshFolding() " {{{
+    set foldmethod=manual
+
+    set nofoldenable
+
+	let folds = systemlist("uctags -x
+		\ --_xformat='%{line}|%{end}|'
+		\ --kinds-Python='{class}{function}{member}' "
+		\ . expand("%") . " 2>/dev/null "
+		\ )
+
+	for fold_str in folds
+		let fold_components = split(fold_str, '|')
+		let fold_start = fold_components[0]
+        let fold_end = fold_components[1]
+
+        silent exec fold_start . ',' . fold_end . 'fold'
+	endfor
+
+    set foldenable
+endfunction " }}}
+
+" augroup fold_update
+"     autocmd!
+"     autocmd BufWritePost * call RefreshFolding()
+" augroup END
+
+function! RunTest(cmd) " {{{
+	call TmuxUnzoom()
+
+    let target_pane = trim(system("tmux list-panes -F '#{pane_title}:#{window_index}.#{pane_index}' | grep 'test' | sed 's/.*://'"))
+
+    if target_pane == '' 
+        echohl WarningMsg
+            echo "There is no pane in the current tmux session with 'test' in its title"
+        echohl None
+        return
+    endif
+
+	silent exec '!tmux send-keys -t ' . target_pane . ' C-c C-l "' . a:cmd . ' ; ~/scripts/refresh-chrome.sh" Enter'
+
+	if HasBreakpoint()
+		call system("tmux select-pane -t " . target_pane)
+		call system("tmux resize-pane -Z")  " Toggle zoom
+	endif
+endfunction " }}}
+
+function! HasBreakpoint() " {{{
+	call system("git diff | grep 'pdb.set_trace()'")
+	return v:shell_error == 0
+endfunction " }}}
+
+function! TmuxUnzoom() " {{{
+	call system("tmux list-panes -F '#F' | grep -q Z")  " Zoomed?
+
+	if v:shell_error == 0
+		call system("tmux resize-pane -Z")  " Toggle zoom
+	endif
+endfunction " }}}
+
+function! TmuxTest() " {{{
+	" echohl is used instead of echoerr because that would distrupt the flow
+	" and these errors are not fatal, just a small visual feedback.
+
+	let test_file_relative_path = expand("%")
+	let test_filename = split(test_file_relative_path, '/')[-1]
+
+	if test_filename !~# '^test_'
+		echohl WarningMsg
+			echo "There is no test associated with this file"
+		echohl None
+		return
+	endif
+
+	let tags = systemlist("uctags -x
+		\ --_xformat='%{line}|%{end}|%{kind}|%{name}|%{scopeKind}|%{scope}|'
+		\ --kinds-Python='{class}{function}{member}' "
+		\ . test_file_relative_path . " 2>/dev/null "
+		\ . "| sort -n -k 1 -t '|' -r"
+		\ )
+
+	let line_num = line(".")
+
+	let tags_for_line = []
+
+	for tag_str in tags
+		let tag_components = split(tag_str, '|')
+		let tag = {
+			\ 'start': tag_components[0],
+			\ 'end': tag_components[1],
+			\ 'kind': tag_components[2],
+			\ 'name': tag_components[3],
+			\ 'scope_kind': tag_components[4],
+			\ 'scope': tag_components[5]
+		\ }
+
+		if tag['start'] <= line_num && tag['end'] >= line_num
+			call add(tags_for_line, tag)
+		endif
+	endfor
+
+	let pytest_test_id = ''
+
+	for tag in tags_for_line
+		if tag['kind'] == 'class'
+			if tag['scope'] != ''
+				" Inner class, probably not a test
+				continue
+			endif
+
+			if tag['name'] !~# 'Test'
+				" Not a test class (name doesn't contain 'Test')
+				continue
+			endif
+
+			let pytest_test_id = '::' . tag['name']
+			break
+		elseif tag['kind'] == 'member'
+			if tag['name'] !~# '^test_'
+				" Not a test method (name doesn't start with 'test_')
+				continue
+			endif
+
+			if tag['scope_kind'] == 'class'
+				let scope_components = split(tag['scope'], '\.')
+				let class_name = scope_components[len(scope_components) - 1]
+
+				if class_name !~# 'Test'
+					" Not a test class (name doesn't contain 'Test')
+					continue
+				endif
+
+				let pytest_test_id = '::' . class_name . '::' . tag['name']
+				break
+			endif
+		elseif tag['kind'] == 'function'
+			if tag['scope'] != ''
+				" Inner function, probably not a test
+				continue
+			endif
+
+			if tag['name'] !~# '^test_'
+				" Not a test function (name doesn't start with 'test_')
+				continue
+			endif
+
+			let pytest_test_id = '::' . tag['name']
+			break
+		endif
+	endfor
+
+	call RunTest('ci/single.sh ' . test_file_relative_path . pytest_test_id)
+endfunction " }}}
+
+function! ReRunLastTmuxTest() " {{{
+	let most_recent_test_cmd = systemlist("cat ~/.zsh_history | cut -d ';' -f 2 | grep '^ci/single.sh' | tail -n 1")[0]
+	call RunTest(trim(most_recent_test_cmd))
+endfunction " }}}
+
+function! ReformatBuffer() " {{{
+	let l:save_cursor = getcurpos()
+
+	if &filetype == 'sql'
+		" pg_format removes {} from the placeholders, so we convert them in
+		" ~placeholder~ format and then again to {placeholder}
+		silent! :%s:{\(\w\+\)\?}:\~\1\~:g
+
+		%!pg_format --function-case 1
+		
+		silent! :%s:\~\s*\(\w\+\)\?\s*\~:{\1}:g
+
+		" Replace spaces with tabs
+		silent! :%s:    :\t:g
+
+		" Fix the placeholder groups after regormatting:
+		" % (name) s -> %(name)s
+		" % s -> %s
+		silent! :%s:%\s*\((\w\+)\)\?\s*s:%\1s:g
+	endif
+
+	normal zR
+	call setpos('.', l:save_cursor)
+endfunction " }}}
+
+nnoremap <silent> <F5> :<C-U>call TmuxTest()<CR>
+nnoremap <silent> <C-F5> :<C-U>call ReRunLastTmuxTest()<CR>
+
+" NeoVim is weird sometimes. It's okay, I still love it <3
+nnoremap <silent> <F29> <C-F5>
+
+nnoremap <silent> <F7> :<C-U>call ReformatBuffer()<CR>

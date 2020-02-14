@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+
+"""
+Generate JIRA and GitLab references and insert them in the commit message.
+
+The following refences will be generated (if available):
+
+* JIRA issue(s) -- taken from the branch name
+* GitLab Merge Request -- taken from the clipboard (expects a
+  GitLab Merge Request URL, can contain a link to a comment)
+* GitLab comment -- taken from the clipboard (expects a GitLab Comment URL)
+
+If any references are found, a 'refs' section will be inserted in the commit
+message with them.
+
+Can be used the same as git-commit -- all the options for git-commit will work
+with this script as well.
+"""
+
+# REQUIREMENTS: xclip
+
+import argparse
+import re
+import subprocess
+import tempfile
+import textwrap
+import sys
+
+
+JIRA_ISSUES_RE = re.compile(r'([A-Z]{2,}\-\d+)')
+GITLAB_URL_RE = re.compile(r'''
+    ^https?://gitlab.?[\w-]+.com
+    /(?P<group>[\w-]+)
+    /(?P<project>[\w-]+)
+    /merge_requests/(?P<mr_id>\d+)
+    (?P<comment>\#note_\d+)?
+''', flags=re.VERBOSE | re.IGNORECASE)
+
+
+def get_stdout(bash_cmd):
+    result = subprocess.run(bash_cmd.split(), stdout=subprocess.PIPE)
+    return result.stdout.decode('utf-8').strip()
+
+
+def get_jira_ref(branch_name):
+    jira_issues = JIRA_ISSUES_RE.findall(branch_name)
+
+    if not jira_issues:
+        return None
+
+    if len(jira_issues) == 1:
+        return "* JIRA Issue: {}".format(jira_issues[0])
+
+    return "* JIRA Issues: {}".format(', '.join(jira_issues))
+
+
+def get_gitlab_mr_ref(url):
+    gitlab_url_match = GITLAB_URL_RE.search(url)
+
+    if gitlab_url_match is None:
+        return None
+
+    return "* GitLab Merge Request: {group}/{project}!{mr_id}".format(
+        group=gitlab_url_match.group('group'),
+        project=gitlab_url_match.group('project'),
+        mr_id=gitlab_url_match.group('mr_id'),
+    )
+
+
+def get_gitlab_discussion_ref(url):
+    gitlab_url_match = GITLAB_URL_RE.search(url)
+
+    if gitlab_url_match is None or gitlab_url_match.group('comment') is None:
+        return None
+
+    return "* GitLab Discussion: {}".format(url)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        prog='git cmt',
+        description=__doc__.strip(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        '-m',
+        '--message',
+        dest='commit_msg',
+        metavar='<msg>',
+        required=False,
+        help="The commit message. If not provided, an editor will open",
+    )
+
+    # If we use something like `git cmt -am "Commit message"`, argparse won't
+    # assign a value to commit_msg since there is no defined `-a` argument.
+    # Instead, it will pass `-am` to git, which will result to a regular commit
+    # without appending the necessary references. To fix this, we check for
+    # "combined arguments" with `m` in them and just remove it from there and
+    # add it as a seperate argument, basically converting `-am` to `-a -m`.
+
+    args = []
+    for arg in sys.argv[1:]:
+        if re.search(r'^\-\w+', arg) and 'm' in arg:
+            args_without_msg = arg.replace('m', '')
+
+            if args_without_msg != '-':
+                args.append(args_without_msg)
+
+            args.append('-m')
+        else:
+            args.append(arg)
+
+    return parser.parse_known_args(args)
+
+
+def main(args, git_args):
+    branch_name = get_stdout('git rev-parse --abbrev-ref HEAD')
+    clipboard_contents = get_stdout('xclip -selection clipboad -o')
+
+    refs = [
+        ref for ref in (
+            get_jira_ref(branch_name),
+            get_gitlab_mr_ref(clipboard_contents),
+            get_gitlab_discussion_ref(clipboard_contents),
+        )
+        if ref is not None
+    ]
+
+    if refs:
+        commit_template = textwrap.dedent("""
+            {commit_msg}
+            refs:
+
+            {refs}
+        """).format(
+            commit_msg=(args.commit_msg + '\n') if args.commit_msg is not None else '',
+            refs="\n".join(refs),
+        )
+
+        with tempfile.NamedTemporaryFile('w') as commit_file:
+            commit_file.write(commit_template)
+            commit_file.seek(0)
+
+            if args.commit_msg is None:
+                subprocess.call(['git', 'commit', '--template', commit_file.name, *git_args])
+            else:
+                subprocess.call(['git', 'commit', '--file', commit_file.name, *git_args])
+    else:
+        if args.commit_msg is None:
+            subprocess.call(['git', 'commit', *git_args])
+        else:
+            subprocess.call(['git', 'commit', '-m', args.commit_msg, *git_args])
+
+
+if __name__ == '__main__':
+    args, git_args = parse_args()
+    main(args, git_args)

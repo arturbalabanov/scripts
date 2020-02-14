@@ -1,0 +1,6 @@
+#!/bin/sh
+
+msg=$(git log -n 1 --format='**%h:** %s')
+
+echo "$msg"
+echo -n "$msg" | xclip -selection clipboard

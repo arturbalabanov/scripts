@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 msg=$(git log -n 1 --format='**%h:** %s')
 

@@ -5,10 +5,14 @@ Generate JIRA and GitLab references and insert them in the commit message.
 
 The following refences will be generated (if available):
 
+* Pivotal story URL -- generated from the ID in the branch name
 * JIRA issue(s) -- taken from the branch name
 * GitLab Merge Request -- taken from the clipboard (expects a
   GitLab Merge Request URL, can contain a link to a comment)
 * GitLab comment -- taken from the clipboard (expects a GitLab Comment URL)
+
+Which references to search for is determined on which 'features' are available
+-- controlled by the ENABLED_FEATURES variable.
 
 If any references are found, a 'refs' section will be inserted in the commit
 message with them.
@@ -25,16 +29,7 @@ import subprocess
 import tempfile
 import textwrap
 import sys
-
-
-JIRA_ISSUES_RE = re.compile(r'([A-Z]{2,}\-\d+)')
-GITLAB_URL_RE = re.compile(r'''
-    ^https?://gitlab.?[\w-]+.com
-    /(?P<group>[\w-]+)
-    /(?P<project>[\w-]+)
-    /merge_requests/(?P<mr_id>\d+)
-    (?P<comment>\#note_\d+)?
-''', flags=re.VERBOSE | re.IGNORECASE)
+import abc
 
 
 def get_stdout(bash_cmd):
@@ -42,38 +37,86 @@ def get_stdout(bash_cmd):
     return result.stdout.decode('utf-8').strip()
 
 
-def get_jira_ref(branch_name):
-    jira_issues = JIRA_ISSUES_RE.findall(branch_name)
+class Feature(abc.ABC):
+    def __init__(self, branch_name, clipboard=None):
+        self.branch_name = branch_name
+        self.clipboard = clipboard
 
-    if not jira_issues:
-        return None
-
-    if len(jira_issues) == 1:
-        return "* JIRA Issue: {}".format(jira_issues[0])
-
-    return "* JIRA Issues: {}".format(', '.join(jira_issues))
+    @abc.abstractmethod
+    def get_ref(self):
+        ...
 
 
-def get_gitlab_mr_ref(url):
-    gitlab_url_match = GITLAB_URL_RE.search(url)
+class JiraIssuesFeature(Feature):
+    JIRA_ISSUES_RE = re.compile(r'([A-Z]{2,}\-\d+)')
 
-    if gitlab_url_match is None:
-        return None
+    def get_ref(self):
+        jira_issues = self.JIRA_ISSUES_RE.findall(self.branch_name)
 
-    return "* GitLab Merge Request: {group}/{project}!{mr_id}".format(
-        group=gitlab_url_match.group('group'),
-        project=gitlab_url_match.group('project'),
-        mr_id=gitlab_url_match.group('mr_id'),
-    )
+        if not jira_issues:
+            return None
+
+        if len(jira_issues) == 1:
+            return "JIRA Issue: {}".format(jira_issues[0])
+
+        return "JIRA Issues: {}".format(', '.join(jira_issues))
 
 
-def get_gitlab_discussion_ref(url):
-    gitlab_url_match = GITLAB_URL_RE.search(url)
+class PivotalStoryFeature(Feature):
+    PIVOTAL_STORY_ID_RE = re.compile(r'^\w/[^/]+/#?(\d+)$')
+    PIVOTAL_URL_TEMPLATE = "https://www.pivotaltracker.com/n/projects/1447360/stories/{story_id}"
 
-    if gitlab_url_match is None or gitlab_url_match.group('comment') is None:
-        return None
+    def get_ref(self):
+        story_id_match = self.PIVOTAL_STORY_ID_RE.search(self.branch_name)
 
-    return "* GitLab Discussion: {}".format(url)
+        if story_id_match is None:
+            return None
+
+        return "Pivotal Story: {}".format(
+            self.PIVOTAL_URL_TEMPLATE.format(story_id=story_id_match.group(1)),
+        )
+
+
+class GitlabFeature(Feature):
+    GITLAB_URL_RE = re.compile(r'''
+        ^https?://(?:git|gitlab)\.[\w\-\.]+\.(?:com|net)
+        /(?P<group>[\w-]+)
+        /(?P<project>[\w-]+)
+        (?:/\-)?
+        /merge_requests/(?P<mr_id>\d+)
+        (?P<comment>\#note_\d+)?
+    ''', flags=re.VERBOSE | re.IGNORECASE)
+
+
+class GitlabMergeRequestFeature(GitlabFeature):
+    def get_ref(self):
+        gitlab_url_match = self.GITLAB_URL_RE.search(self.clipboard)
+
+        if gitlab_url_match is None:
+            return None
+
+        return "GitLab Merge Request: {group}/{project}!{mr_id}".format(
+            group=gitlab_url_match.group('group'),
+            project=gitlab_url_match.group('project'),
+            mr_id=gitlab_url_match.group('mr_id'),
+        )
+
+
+class GitLabDiscussionFeature(GitlabFeature):
+    def get_ref(self):
+        gitlab_url_match = self.GITLAB_URL_RE.search(self.clipboard)
+
+        if gitlab_url_match is None or gitlab_url_match.group('comment') is None:
+            return None
+
+        return "GitLab Discussion: {}".format(self.clipboard)
+
+
+ENABLED_FEATURES = [
+    PivotalStoryFeature,
+    GitlabMergeRequestFeature,
+    GitLabDiscussionFeature,
+]
 
 
 def parse_args():
@@ -117,14 +160,14 @@ def main(args, git_args):
     branch_name = get_stdout('git rev-parse --abbrev-ref HEAD')
     clipboard_contents = get_stdout('xclip -selection clipboad -o')
 
-    refs = [
-        ref for ref in (
-            get_jira_ref(branch_name),
-            get_gitlab_mr_ref(clipboard_contents),
-            get_gitlab_discussion_ref(clipboard_contents),
-        )
-        if ref is not None
-    ]
+    refs = []
+
+    for feature_cls in ENABLED_FEATURES:
+        feature = feature_cls(branch_name, clipboard_contents)
+        ref = feature.get_ref()
+
+        if ref is not None:
+            refs.append('* {}'.format(ref))
 
     if refs:
         commit_template = textwrap.dedent("""

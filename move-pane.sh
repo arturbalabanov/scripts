@@ -14,7 +14,11 @@ keybinding=$2
 
 pane_tty=$(tmux display -p '#{pane_tty}')
 
+# TODO: There is a bug (or a feature?) in `poetry shell` where ps doesn't
+# report the subprocesses following that one, so this detection doesn't work.
+# Find a workarround for this.
 is_vim=$(ps -o state= -o comm= -t "$pane_tty" | grep -iE '^[^TXZ ]+ +(\\S+\\/)?g?(view|n?vim?x?)(diff)?$')
+
 if [[ "$3" != "--ignore_vim" && -n $is_vim ]]; then
     tmux send-keys $keybinding
     exit 0
@@ -36,21 +40,8 @@ if [[ ! ( \
 fi
 
 if [[ "$plat" == "linux" ]]; then
-    function is_win_maximized {
-        [[ -n $( \
-            xprop -id "$1" \
-            | grep _NET_WM_STATE \
-            | grep MAXIMIZED_HORZ \
-            | grep MAXIMIZED_VERT \
-        ) ]]
-    }
-
     # Convert to HEX since all the other commands use that format
     curr_win_id=$(printf '0x%08x' $(xdotool getactivewindow))
-
-    if ! is_win_maximized $curr_win_id; then
-        exit 0
-    fi
 
     read -r \
         curr_win_id \
@@ -66,10 +57,6 @@ if [[ "$plat" == "linux" ]]; then
 
     while read -r win_id desktop_id win_x win_y win_w win_h win_class hostname win_title; do
         if [[ $win_id == $curr_win_id || ! $win_class =~ 'urxvt' ]]; then
-            continue
-        fi
-
-        if ! is_win_maximized $win_id; then
             continue
         fi
 

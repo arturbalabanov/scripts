@@ -1,5 +1,12 @@
 #!/bin/bash
 
+read -p "WARNING: You should be rebasing, not merging. Are you sure you want to proceed? [y/N] " -n 1 -r reply
+reply=${reply:-n}  # set the default value to 'n'
+
+if [[ $reply =~ ^[Nn]$ ]]; then
+	exit 1
+fi
+
 git checkout master && git pull && git checkout - && git merge master
 
 if [[ $? -eq 0 ]]; then

@@ -23,7 +23,14 @@ function _dependancy {
 _dependancy "jq"
 _dependancy "pass"
 
-GITLAB_API_BASE_URL=$(git remote get-url origin | sed -r 's_^\s*(https?://)(\w+@)?([a-zA-Z0-9\.]+)/.*$_\1\3/api/v4_')
+origin_url=$(git remote get-url origin)
+GITLAB_API_BASE_URL=$(echo $origin_url | sed -r 's_^\s*(https?://)(\w+@)?([a-zA-Z0-9\.]+)/.*$_\1\3/api/v4_')
+
+if [[ $origin_url == $GITLAB_API_BASE_URL ]]; then
+	# Unrecognised URL format, probably not a GitLab repo
+	exit 0
+fi
+
 GITLAB_PRIVATE_TOKEN=$(pass show gitlab-private-token)
 
 branch_name=$(git symbolic-ref --short -q HEAD)

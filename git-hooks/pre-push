@@ -24,7 +24,7 @@ _dependancy "jq"
 _dependancy "pass"
 
 origin_url=$(git remote get-url origin)
-GITLAB_API_BASE_URL=$(echo $origin_url | sed -r 's_^\s*(https?://)(\w+@)?([a-zA-Z0-9\.]+)/.*$_\1\3/api/v4_')
+GITLAB_API_BASE_URL=$(echo $origin_url | sed -r 's_^\s*(https?://)(\w+@)?(git|gitlab)\.([a-zA-Z0-9\.]+)/.*$_\1\4/api/v4_')
 
 if [[ $origin_url == $GITLAB_API_BASE_URL ]]; then
 	# Unrecognised URL format, probably not a GitLab repo

@@ -1,23 +1,23 @@
 #!/bin/bash
 
 function _gl_http {
-	request=$1
-	relative_url=$2
-	jq_filter=$3
+    request=$1
+    relative_url=$2
+    jq_filter=$3
 
-	url=$GITLAB_API_BASE_URL/$relative_url
+    url=$GITLAB_API_BASE_URL/$relative_url
 
-	curl --request $request --header "PRIVATE-TOKEN: $GITLAB_PRIVATE_TOKEN" $url 2>/dev/null \
-		| ( [[ -n $jq_filter ]] && jq -r "$jq_filter" || : )
+    curl --request $request --header "PRIVATE-TOKEN: $GITLAB_PRIVATE_TOKEN" $url 2>/dev/null \
+        | ( [[ -n $jq_filter ]] && jq -r "$jq_filter" || : )
 }
 
 function _dependancy {
-	command_name=$1
+    command_name=$1
 
-	if ! command -v "$command_name" >/dev/null 2>&1; then
-		echo "'$command_name' required but not found"
-		exit 1
-	fi
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        echo "'$command_name' required but not found"
+        exit 1
+    fi
 } 
 
 _dependancy "jq"
@@ -30,17 +30,17 @@ branch_name=$(git symbolic-ref --short -q HEAD)
 repo_name=$(basename $(git rev-parse --show-toplevel))
 
 gitlab_repo_id=$(_gl_http "GET" \
-	"projects?search=$repo_name" \
-	".[] | select(.name == \"$repo_name\") | .id" \
+    "projects?search=$repo_name" \
+    ".[] | select(.name == \"$repo_name\") | .id" \
 )
 
 pipelines_to_cancel=$(_gl_http "GET" \
-	"projects/$gitlab_repo_id/pipelines?ref=$branch_name" \
-	".[] | select(.status == \"running\" or .status == \"pending\") | .id" \
+    "projects/$gitlab_repo_id/pipelines?ref=$branch_name" \
+    ".[] | select(.status == \"running\" or .status == \"pending\") | .id" \
 )
 
 for pipeline_id in $pipelines_to_cancel; do
-	echo "Cancelling Pipeline $pipeline_id"
+    echo "Cancelling Pipeline $pipeline_id"
 
-	_gl_http "POST" "projects/$gitlab_repo_id/pipelines/$pipeline_id/cancel"
+    _gl_http "POST" "projects/$gitlab_repo_id/pipelines/$pipeline_id/cancel"
 done

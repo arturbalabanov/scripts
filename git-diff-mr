@@ -1,0 +1,6 @@
+#!/bin/bash
+
+curr_branch=$(git branch --show-current)
+diverge_commit=$(git merge-base master $curr_branch)
+
+git diff $diverge_commit..$curr_branch
